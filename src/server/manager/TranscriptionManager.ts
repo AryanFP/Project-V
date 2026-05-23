@@ -47,6 +47,11 @@ export class TranscriptionManager {
   setup(session: AppSession): void {
     this.unsubscribe = session.events.onTranscription(
       (data: TranscriptionData) => {
+        // Mark "wearer is speaking" on EVERY transcription event (partial
+        // or final). This pauses the proactive watcher so it never speaks
+        // over the wearer. Cheap signal — just a timestamp update.
+        this.user.proactiveWatcher.noteWearerSpeech();
+
         if (data.isFinal) {
           console.log(
             `✅ Final transcription (${this.user.userId}): ${data.text}`,

@@ -7,6 +7,7 @@
 
 import { CameraApp } from "./server/CameraApp";
 import { api } from "./server/routes/routes";
+import { sessions } from "./server/manager/SessionManager";
 import { createMentraAuthRoutes } from "@mentra/sdk";
 import indexHtml from "./frontend/index.html";
 
@@ -105,6 +106,25 @@ console.log("");
 // Graceful shutdown
 const shutdown = async () => {
   console.log("\n🛑 Shutting down Camera App...");
+
+  // Force-stop every active livestream BEFORE we tear down the SDK, so the
+  // glasses + Cloudflare ingest stop publishing. If we wait for app.stop()
+  // to fire onStop, the WS may already be tearing down and the stop calls
+  // can no-op silently. Doing it here issues the stops while WebSockets
+  // are still alive. liveStream.destroy() schedules a 200ms retry that
+  // also lands before exit, since we await app.stop() right after.
+  for (const user of sessions.all()) {
+    try {
+      console.log(`📹 Shutdown: force-stopping livestream for ${user.userId}`);
+      user.liveStream.destroy();
+    } catch (err) {
+      console.error(`📹 Shutdown: failed to stop livestream for ${user.userId}:`, err);
+    }
+  }
+  // Give the 200ms delayed retry + the checkExistingStream round-trip a
+  // chance to finish before we kill the process.
+  await new Promise((r) => setTimeout(r, 400));
+
   await app.stop();
   console.log("👋 Goodbye!");
   process.exit(0);

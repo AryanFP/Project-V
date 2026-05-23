@@ -18,20 +18,20 @@ interface AIMessage {
   done: boolean;
 }
 
-type Mode = "passive" | "active" | "outdoor" | "auto";
+type Mode = "proactive" | "active" | "outdoor" | "auto";
 
 /** Mode metadata for the selector buttons + badge. */
 const MODE_INFO: Record<
   Mode,
   { label: string; icon: typeof Eye; hint: string }
 > = {
-  passive: { label: "Passive", icon: Eye, hint: "narrates meaningful changes" },
-  active: { label: "Active", icon: MessageCircle, hint: "direct Q&A" },
+  proactive: { label: "Proactive", icon: Eye, hint: "narrates meaningful changes" },
+  active: { label: "Active", icon: MessageCircle, hint: "silent until asked" },
   outdoor: { label: "Outdoor", icon: TreePine, hint: "hazards & navigation" },
   auto: { label: "Auto", icon: Wand2, hint: "adapts to the scene" },
 };
 
-const SELECTABLE_MODES: Mode[] = ["passive", "outdoor", "auto"];
+const SELECTABLE_MODES: Mode[] = ["proactive", "outdoor", "auto"];
 
 /** How often to push a camera frame to the AI, in milliseconds. */
 const FRAME_INTERVAL_MS = 1000;
@@ -50,7 +50,7 @@ const FRAME_WIDTH = 640;
  */
 export function AIPanel({ userId, video, streamActive }: AIPanelProps) {
   const [aiConnected, setAiConnected] = useState(false);
-  const [mode, setMode] = useState<Mode>("passive");
+  const [mode, setMode] = useState<Mode>("proactive");
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const msgIdRef = useRef(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);

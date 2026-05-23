@@ -48,15 +48,16 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "set_mode",
     description:
-      "Switch the AI mode. passive = ambient narration only when meaningful; " +
+      "Switch the AI mode. proactive = ambient narration only when " +
+      "something meaningful changes (the AI watches and speaks on its own); " +
       "outdoor = navigation/hazard priority; auto = adapts to scene; " +
-      "active = direct Q&A.",
+      "active = silent until asked (direct Q&A only).",
     parameters: {
       type: Type.OBJECT,
       properties: {
         mode: {
           type: Type.STRING,
-          description: "One of: passive, active, outdoor, auto.",
+          description: "One of: proactive, active, outdoor, auto.",
         },
       },
       required: ["mode"],
@@ -108,7 +109,7 @@ export async function executeTool(
     case "set_mode": {
       const mode = args.mode;
       if (!isMode(mode)) {
-        return fail(`Unknown mode: ${String(mode)}. Valid modes: passive, active, outdoor, auto.`, user);
+        return fail(`Unknown mode: ${String(mode)}. Valid modes: proactive, active, outdoor, auto.`, user);
       }
       try {
         await user.agent.setMode(mode as Mode, "tool");

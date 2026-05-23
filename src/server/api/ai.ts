@@ -32,7 +32,7 @@ export async function setAIMode(c: Context) {
 
   if (!userId) return c.json({ error: "userId is required" }, 400);
   if (!isMode(mode)) {
-    return c.json({ error: "mode must be passive | active | outdoor | auto" }, 400);
+    return c.json({ error: "mode must be proactive | active | outdoor | auto" }, 400);
   }
 
   const user = sessions.get(userId);

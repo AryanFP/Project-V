@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Camera } from "lucide-react";
 import { Badge } from "../../components/ui";
 import { LiveStream } from "./components/LiveStream";
 import { AIPanel } from "./components/AIPanel";
@@ -100,9 +99,11 @@ export default function HomePage({ userId }: HomePageProps) {
       {/* Header */}
       <div>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
-            <Camera className="w-4 h-4 text-primary-foreground" />
-          </div>
+          <img
+            src="/assets/icons/gemini-clairty.png"
+            alt="Clairity"
+            className="w-16 h-16 object-contain"
+          />
           <div>
             <h1 className="text-lg font-semibold">Clairity</h1>
             <p className="text-xs text-muted-foreground">Live camera & captions</p>

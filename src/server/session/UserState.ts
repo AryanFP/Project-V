@@ -53,7 +53,7 @@ export class UserState {
     cameraOn: false,
     streamStatus: "inactive",
     aiConnected: false,
-    mode: "passive",
+    mode: "proactive",
     hasFrame: false,
   };
 

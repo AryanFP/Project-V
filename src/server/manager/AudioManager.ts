@@ -100,9 +100,38 @@ export class AudioManager {
    * WebRTC subsystem grabs audio focus on activation, and our existing
    * MP3 stream gets silenced. Restarting forces a new createOutputStream
    * which reclaims the audio path with stopOtherAudio=true.
+   *
+   * IMPORTANT: this differs from destroy() in one critical way — it ends
+   * the old SDK stream SYNCHRONOUSLY before opening a new one. destroy()'s
+   * 500ms-delayed stream.end() is only safe at full session shutdown; if
+   * we used it here, the old stream's delayed end() would fire AFTER the
+   * new stream was open and tear down the entire audio session on the
+   * phone, leaving the user with NO audio at all (including audio.speak
+   * and earcons, because they share the same audio session).
    */
   async restartContinuousOutput(): Promise<void> {
-    await this.destroy();
+    const oldFfmpeg = this.ffmpeg;
+    const oldStream = this.outputStream;
+    this.ffmpeg = null;
+    this.outputStream = null;
+
+    // Close ffmpeg's stdin to flush its buffer, then end the SDK stream
+    // immediately — we want the close to land BEFORE the new stream opens
+    // so there's no scheduled-end ambush in flight.
+    try {
+      (oldFfmpeg?.stdin as import("bun").FileSink | undefined)?.end();
+    } catch {}
+    try {
+      oldFfmpeg?.kill();
+    } catch {}
+    if (oldStream) {
+      try {
+        await oldStream.end();
+      } catch {
+        /* stream already closed — fine */
+      }
+    }
+
     await this.startContinuousOutput();
   }
 

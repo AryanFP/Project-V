@@ -34,7 +34,7 @@ const MODEL = process.env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview";
  * AIManager — owns the Gemini Live session for a single user.
  *
  * The session is connected with a system prompt that depends on the current
- * mode (passive / active / outdoor / auto). Changing mode reconnects the
+ * mode (proactive / active / outdoor / auto). Changing mode reconnects the
  * session with the new prompt. The MasterAgent orchestrator drives the mode.
  *
  * Pipeline:
@@ -77,6 +77,15 @@ export class AIManager {
   private latestFrame: string | null = null;
 
   constructor(private user: User) {}
+
+  /**
+   * Read-only access to the most recent camera frame.
+   * Used by ProactiveWatcher to poll without coupling to the rest of the
+   * AIManager state. Returns null if no frame has arrived yet.
+   */
+  peekLatestFrame(): string | null {
+    return this.latestFrame;
+  }
 
   /**
    * True while the AI is currently producing audio for the active turn.
@@ -215,10 +224,15 @@ export class AIManager {
   /**
    * Receive a camera frame from the webview.
    *
-   * We do NOT stream frames continuously to Gemini — that would make the
-   * model narrate on its own. Instead we keep only the latest frame and
-   * send it to Gemini at question time (see ask()), so the AI sees the
+   * We do NOT stream frames continuously to Gemini — that would queue up
+   * non-terminal turns on the Live session and block subsequent wake-word
+   * `ask()` calls from getting a response. Instead we keep only the latest
+   * frame and attach it at question time (see ask()), so the AI sees the
    * camera only when the wearer explicitly asks "Hey Gemini, …".
+   *
+   * (A real proactive-narration mode would require `sendRealtimeInput`
+   * rather than `sendClientContent` — see issues/02-proactive-mode.md.
+   * For v1 the mode is just a system-prompt flavor, not a streaming source.)
    *
    * @param jpegBase64 - Base64-encoded JPEG (no data: prefix).
    */

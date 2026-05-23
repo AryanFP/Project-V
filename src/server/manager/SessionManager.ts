@@ -25,6 +25,11 @@ export class SessionManager {
     return this.users.get(userId);
   }
 
+  /** All active users — used at shutdown to force-stop every livestream. */
+  all(): User[] {
+    return Array.from(this.users.values());
+  }
+
   /** Clean up and remove a user */
   remove(userId: string): void {
     const user = this.users.get(userId);

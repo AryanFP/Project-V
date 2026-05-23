@@ -9,7 +9,7 @@ import { recallMemories } from "./tools/recallMemories";
  * mishearings. Optional "Hey" — bare "Gemini" also works.
  */
 const HEY_VARIANTS = ["hey", "hi", "ay", "a"];
-const GEMINI_VARIANTS = ["gemini", "jiminy", "geminy", "gemeni", "jiminey", "gemoni", "jimena"];
+const GEMINI_VARIANTS = ["gemini", "jiminy", "geminy", "gemeni", "jiminey", "gemoni", "jimena", "jim", "Gentlemen", "Gentleman"];
 const WAKE_REGEX = new RegExp(
   `^["'\`.,\\s]*(?:(?:${HEY_VARIANTS.join("|")})[,\\s]+)?(?:${GEMINI_VARIANTS.join("|")})\\b`,
   "i",

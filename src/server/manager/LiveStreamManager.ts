@@ -217,35 +217,55 @@ export class LiveStreamManager {
   /**
    * Tear down the manager.
    *
-   * If a livestream is still up, stop it first — otherwise the glasses /
-   * Cloudflare stream keeps running after the session ends. This is called
-   * from User.cleanup() on session disconnect, so we must send the stop
-   * request before the AppSession's WebSocket is gone.
+   * Force-stops the livestream UNCONDITIONALLY — we don't trust our local
+   * state, because the SDK can lose its status WS without ever telling us
+   * the stream went down. Worst case the stop call is a no-op; best case
+   * we save the wearer's bandwidth + Cloudflare minutes that would
+   * otherwise leak after the session ends.
+   *
+   * Strategy:
+   *   1. Best-effort `stopManagedStream()` on the local AppSession.
+   *   2. A second attempt 200ms later — covers a transient
+   *      CONNECTING / CLOSING window where the first call no-ops.
+   *   3. Also issue checkExistingStream → stopManagedStream on the live
+   *      session if it survives the cleanup race.
+   *
+   * Every leg is swallowed (sync throw AND async reject), so the dev
+   * server can't crash even if the SDK is mid-reconnect.
    */
   destroy(): void {
-    if (this.isStreamUp() && this.user.appSession) {
-      console.log(`📹 Session ending — force-stopping livestream for ${this.user.userId}`);
-      // Fire-and-forget: stopManagedStream() just sends a WS message; we can't
-      // await here because the session is being torn down around us. The SDK
-      // throws SYNCHRONOUSLY if the WebSocket is mid-reconnect (CONNECTING /
-      // CLOSING) AND also returns a Promise that may reject — guard BOTH or
-      // the bun process dies on an unhandled rejection during teardown.
-      try {
-        const promise = this.user.appSession.camera.stopManagedStream();
-        if (promise && typeof (promise as Promise<unknown>).catch === "function") {
-          (promise as Promise<unknown>).catch((error) => {
-            console.error(
-              `📹 stopManagedStream rejected during cleanup for ${this.user.userId}:`,
-              error instanceof Error ? error.message : error,
-            );
-          });
+    const session = this.user.appSession;
+    if (session) {
+      console.log(
+        `📹 Session ending — force-stopping livestream for ${this.user.userId} (local state=${this.state.status})`,
+      );
+
+      // Attempt 1: immediate stop. Don't gate on local state — if the SDK
+      // thinks there's no stream this is a cheap no-op; if there IS one we
+      // catch it before the AppSession's WebSocket goes away.
+      this.safeStopManagedStream(session, "attempt-1-immediate");
+
+      // Attempt 2: retry once after a beat. Covers the case where the WS
+      // was CONNECTING / CLOSING at attempt-1's call site. We can't await
+      // here (cleanup is sync), so schedule and forget.
+      setTimeout(() => {
+        const stillSession = this.user.appSession;
+        // After 200ms the User may have been recycled — only target the
+        // ORIGINAL session we started cleanup with, never a new one.
+        if (stillSession === session || stillSession === null) {
+          this.safeStopManagedStream(session, "attempt-2-delayed");
         }
-      } catch (error) {
-        console.error(
-          `📹 stopManagedStream threw during cleanup for ${this.user.userId}:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
+      }, 200);
+
+      // Attempt 3: ask the cloud "is there a stream up?" and stop it if so.
+      // This catches the edge case where our local state says inactive but
+      // the cloud still has an orphan stream open (which has bitten us
+      // before — see start()'s checkExistingStream path).
+      this.safeCheckAndStop(session);
+    } else {
+      console.log(
+        `📹 Session ending — no AppSession on ${this.user.userId}, cannot send stop`,
+      );
     }
 
     this.unsubscribe?.();
@@ -255,5 +275,66 @@ export class LiveStreamManager {
     // we don't want to broadcast/mirror a dead-final status during cleanup.
     this.state = { status: "inactive" };
     this.user.state.setStreamStatus("inactive");
+  }
+
+  /**
+   * Best-effort wrapper for session.camera.stopManagedStream().
+   *
+   * Swallows BOTH sync throws (WS in CONNECTING/CLOSING state throws
+   * synchronously from send()) AND async rejections (cloud returned an
+   * error or the WS closed mid-call). Either is fine here — the goal is
+   * "make a noise at the cloud telling it to shut the stream down" and
+   * we've done our part as long as the call was issued.
+   */
+  private safeStopManagedStream(session: AppSession, tag: string): void {
+    try {
+      const promise = session.camera.stopManagedStream();
+      if (promise && typeof (promise as Promise<unknown>).catch === "function") {
+        (promise as Promise<unknown>).catch((error) => {
+          console.error(
+            `📹 [${tag}] stopManagedStream rejected for ${this.user.userId}:`,
+            error instanceof Error ? error.message : error,
+          );
+        });
+      } else {
+        console.log(
+          `📹 [${tag}] stopManagedStream issued for ${this.user.userId}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `📹 [${tag}] stopManagedStream threw for ${this.user.userId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  /**
+   * Ask the cloud whether ANY managed stream is still attributed to this
+   * session — and if so, stop it. Belt-and-suspenders against the case
+   * where our local state went stale and `stopManagedStream` on its own
+   * was a no-op because the SDK didn't think a stream existed.
+   *
+   * Fully async + fire-and-forget; rejections logged, never thrown.
+   */
+  private safeCheckAndStop(session: AppSession): void {
+    void (async () => {
+      try {
+        const existing = await session.camera.checkExistingStream();
+        if (existing?.hasActiveStream) {
+          console.log(
+            `📹 [attempt-3-check] cloud reports stream still active for ${this.user.userId}, sending stop`,
+          );
+          this.safeStopManagedStream(session, "attempt-3-check");
+        }
+      } catch (error) {
+        // checkExistingStream itself can fail mid-cleanup — that's fine,
+        // we've already issued attempts 1 and 2.
+        console.error(
+          `📹 [attempt-3-check] checkExistingStream failed for ${this.user.userId}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    })();
   }
 }
