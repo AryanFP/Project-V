@@ -112,3 +112,18 @@ const shutdown = async () => {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Survive misbehaving SDK / WebSocket errors during teardown. The MentraOS
+// SDK has paths (e.g. stopManagedStream while the WS is mid-reconnect) that
+// throw or reject async — without these handlers, a session disconnect can
+// crash the entire dev server. Logging the error is enough; the request
+// that triggered it is already dead.
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    "⚠️  Unhandled promise rejection:",
+    reason instanceof Error ? reason.stack ?? reason.message : reason,
+  );
+});
+process.on("uncaughtException", (error) => {
+  console.error("⚠️  Uncaught exception:", error.stack ?? error.message);
+});

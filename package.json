@@ -11,7 +11,12 @@
   "license": "ISC",
   "description": "Camera app for taking photos with MentraOS",
   "dependencies": {
+    "@ai-sdk/google": "latest",
     "@google/genai": "^2.6.0",
+    "@libsql/client": "latest",
+    "@mastra/core": "^1.4.0",
+    "@mastra/libsql": "latest",
+    "@mastra/memory": "latest",
     "@mentra/react": "2.1.2",
     "@mentra/sdk": "^3.0.0-hono.8",
     "@radix-ui/react-scroll-area": "^1.2.2",

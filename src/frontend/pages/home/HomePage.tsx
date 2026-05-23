@@ -3,6 +3,7 @@ import { Camera } from "lucide-react";
 import { Badge } from "../../components/ui";
 import { LiveStream } from "./components/LiveStream";
 import { AIPanel } from "./components/AIPanel";
+import { MemoryCaptureBridge } from "./components/MemoryCaptureBridge";
 import {
   TranscriptionFeed,
   type Transcription,
@@ -124,6 +125,9 @@ export default function HomePage({ userId }: HomePageProps) {
 
       {/* AI assistant — sees the camera feed, answers spoken questions */}
       <AIPanel userId={userId} video={video} streamActive={streamActive} />
+
+      {/* Headless: fulfills "remember this" frame captures from the live <video>. */}
+      <MemoryCaptureBridge userId={userId} video={video} />
 
       {/* Live captions */}
       <TranscriptionFeed transcriptions={transcriptions} />

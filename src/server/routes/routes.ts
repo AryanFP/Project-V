@@ -17,6 +17,7 @@ import {
   liveStreamStatus,
 } from "../api/livestream";
 import { connectAI, disconnectAI, aiFrame, aiStream, setAIMode } from "../api/ai";
+import { memoryCapture, memoryCaptureStream } from "../api/memory";
 
 export const api = new Hono();
 
@@ -38,6 +39,11 @@ api.post("/ai/connect", connectAI);
 api.post("/ai/disconnect", disconnectAI);
 api.post("/ai/frame", aiFrame);
 api.post("/ai/mode", setAIMode);
+
+// Visual memory — server asks the webview to capture frames from the live
+// WHEP <video> on demand, webview POSTs them back here.
+api.get("/memory/capture-stream", memoryCaptureStream);
+api.post("/memory/capture", memoryCapture);
 
 // Audio
 api.post("/speak", speak);

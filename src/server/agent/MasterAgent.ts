@@ -1,5 +1,8 @@
 import type { User } from "../session/User";
 import type { Mode } from "./modes";
+import { routeIntent } from "./IntentRouter";
+import { rememberMoment } from "./tools/rememberMoment";
+import { recallMemories } from "./tools/recallMemories";
 
 /**
  * Wake phrase: "Hey Gemini". STT mangles both words, so we tolerate common
@@ -167,8 +170,55 @@ export class MasterAgent {
     const elapsed = Date.now() - bingStartedAt;
     const wait = Math.max(0, 2000 - elapsed);
     setTimeout(() => {
-      this.user.ai.ask(question);
+      void this.route(question);
     }, wait);
+  }
+
+  /**
+   * Route a post-wake-phrase utterance.
+   *
+   *   "remember this" / "save the keys"     → memory store path
+   *   "where are my keys?" / "did I take X" → memory recall path
+   *   anything else                         → existing Gemini Live ask()
+   *
+   * Memory branches speak their result through AudioManager.speak() (the
+   * SDK's server-side TTS), which is separate from the continuous Gemini
+   * Live PCM pipeline. They DON'T touch the Gemini Live session, so the
+   * existing realtime flow is untouched.
+   */
+  private async route(question: string): Promise<void> {
+    const { intent, payload } = routeIntent(question);
+
+    if (intent === "remember") {
+      console.log(`🧠💾 Intent: remember (${this.user.userId}) — "${payload}"`);
+      try {
+        const result = await rememberMoment(this.user, { reason: payload });
+        await this.user.audio.speak(result.spoken).catch(() => {});
+      } catch (error) {
+        console.error(`🧠💾 rememberMoment failed for ${this.user.userId}:`, error);
+        await this.user.audio
+          .speak("I couldn't remember that — try again.")
+          .catch(() => {});
+      }
+      return;
+    }
+
+    if (intent === "recall") {
+      console.log(`🧠🔎 Intent: recall (${this.user.userId}) — "${payload}"`);
+      try {
+        const result = await recallMemories(this.user, { query: payload });
+        await this.user.audio.speak(result.spoken).catch(() => {});
+      } catch (error) {
+        console.error(`🧠🔎 recallMemories failed for ${this.user.userId}:`, error);
+        await this.user.audio
+          .speak("I'm having trouble checking my memory right now.")
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // Default: existing Gemini Live path.
+    this.user.ai.ask(question);
   }
 
   /**

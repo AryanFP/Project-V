@@ -138,7 +138,7 @@ export class LiveStreamManager {
         hlsUrl: result.hlsUrl,
       });
       console.log(
-        `📹 Livestream ready for ${this.user.userId} — webrtc=${result.webrtcUrl ?? "none"}`,
+        `📹 Livestream ready for ${this.user.userId} — webrtc=${result.webrtcUrl ?? "none"} hls=${result.hlsUrl ?? "none"}`,
       );
       return this.state;
     } catch (error) {
@@ -225,12 +225,26 @@ export class LiveStreamManager {
   destroy(): void {
     if (this.isStreamUp() && this.user.appSession) {
       console.log(`📹 Session ending — force-stopping livestream for ${this.user.userId}`);
+      // Fire-and-forget: stopManagedStream() just sends a WS message; we can't
+      // await here because the session is being torn down around us. The SDK
+      // throws SYNCHRONOUSLY if the WebSocket is mid-reconnect (CONNECTING /
+      // CLOSING) AND also returns a Promise that may reject — guard BOTH or
+      // the bun process dies on an unhandled rejection during teardown.
       try {
-        // Fire-and-forget: stopManagedStream() just sends a message; we can't
-        // await here because the session is being torn down around us.
-        this.user.appSession.camera.stopManagedStream();
+        const promise = this.user.appSession.camera.stopManagedStream();
+        if (promise && typeof (promise as Promise<unknown>).catch === "function") {
+          (promise as Promise<unknown>).catch((error) => {
+            console.error(
+              `📹 stopManagedStream rejected during cleanup for ${this.user.userId}:`,
+              error instanceof Error ? error.message : error,
+            );
+          });
+        }
       } catch (error) {
-        console.error(`📹 Failed to stop livestream during cleanup for ${this.user.userId}:`, error);
+        console.error(
+          `📹 stopManagedStream threw during cleanup for ${this.user.userId}:`,
+          error instanceof Error ? error.message : error,
+        );
       }
     }
 

@@ -6,6 +6,8 @@ import { StorageManager } from "../manager/StorageManager";
 import { InputManager } from "../manager/InputManager";
 import { LiveStreamManager } from "../manager/LiveStreamManager";
 import { AIManager } from "../manager/AIManager";
+import { HlsBurst } from "../manager/HlsBurst";
+import { WebviewBurst } from "../manager/WebviewBurst";
 import { MasterAgent } from "../agent/MasterAgent";
 import { UserState } from "./UserState";
 
@@ -41,11 +43,34 @@ export class User {
   /** Gemini Live AI — sees the camera feed, answers spoken questions */
   ai: AIManager;
 
+  /**
+   * On-demand frame extractor from the active WebRTC livestream's HLS feed.
+   * NOT used in v1 — Cloudflare HLS segments take 30-90s to appear after a
+   * stream goes active, so this 404s in practice. Kept here as a dormant
+   * fallback we can revive if Cloudflare's HLS behavior changes.
+   */
+  hlsBurst: HlsBurst;
+
+  /**
+   * Active visual-memory frame source. Asks the webview to capture frames
+   * from the live WHEP <video> element (which works the instant the stream
+   * is up) and POST them back. Replaces hlsBurst for v1.
+   */
+  webviewBurst: WebviewBurst;
+
   /** Master orchestrator — owns the AI mode and routes utterances */
   agent: MasterAgent;
 
   /** Canonical session state (camera, mode, ai, …) for the AI to act on. */
   state: UserState;
+
+  /**
+   * Monotonic counter incremented every time a new glasses AppSession is
+   * attached to this User. Used to derive a stable session id for memory
+   * rows so we can attribute memories to a specific wearer-session for
+   * filtering. Starts at 0; the first setAppSession() bumps it to 1.
+   */
+  sessionEpoch = 0;
 
   constructor(public readonly userId: string) {
     this.state = new UserState();
@@ -56,12 +81,15 @@ export class User {
     this.input = new InputManager(this);
     this.liveStream = new LiveStreamManager(this);
     this.ai = new AIManager(this);
+    this.hlsBurst = new HlsBurst(this);
+    this.webviewBurst = new WebviewBurst(this);
     this.agent = new MasterAgent(this);
   }
 
   /** Wire up a glasses connection — sets up all event listeners */
   setAppSession(session: AppSession): void {
     this.appSession = session;
+    this.sessionEpoch++;
     this.state.setSessionConnected(true);
     this.transcription.setup(session);
     this.input.setup(session);
@@ -98,6 +126,7 @@ export class User {
     this.ai.destroy();
     void this.audio.destroy();
     this.photo.destroy();
+    this.webviewBurst.destroy();
     this.appSession = null;
   }
 }
