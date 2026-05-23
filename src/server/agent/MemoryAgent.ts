@@ -372,8 +372,12 @@ export class MemoryAgent {
 
   // ── LibSQL plumbing ────────────────────────────────────────────────────
 
-  /** Lazily open the LibSQL client + run the schema migration. */
-  private async ensureSchema(): Promise<void> {
+  /**
+   * Lazily open the LibSQL client + run the schema migration.
+   * Public so the /memories listing endpoint can call this before its read
+   * without opening a parallel libsql connection.
+   */
+  async ensureSchema(): Promise<void> {
     if (this.schemaReady) return;
     const client = await this.ensureLibsql();
 
@@ -524,7 +528,7 @@ export class MemoryAgent {
    * Open the LibSQL client. Imported dynamically so the rest of the file
    * type-checks even before `bun install` runs.
    */
-  private async ensureLibsql(): Promise<any> {
+  async ensureLibsql(): Promise<any> {
     if (this.libsql) return this.libsql;
     // @ts-ignore — package added to package.json; install at hackathon time.
     const libsqlModule = await import("@libsql/client");

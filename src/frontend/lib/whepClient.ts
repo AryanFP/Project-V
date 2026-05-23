@@ -1,9 +1,27 @@
 /**
  * Minimal WHEP (WebRTC-HTTP Egress Protocol) client.
  *
- * WHEP playback is simple: create a recvonly RTCPeerConnection, POST the
- * local SDP offer to the WHEP URL, apply the SDP answer that comes back.
- * Cloudflare Stream then pushes the glasses' video over WebRTC — sub-second.
+ * Mirrors the sibling Livestreamer app's WHEPClient
+ * (Livestreamer/src/frontend/src/components/WHEPClient.ts), which is
+ * battle-tested against Cloudflare Stream's WHEP endpoint. Key behaviors
+ * that this version inherits:
+ *
+ *   - `bundlePolicy: "max-bundle"` — ensures video + audio are bundled in
+ *     a single transport, which is what Cloudflare's WHEP answer expects.
+ *     Without it, SDP negotiation can succeed but no media flows.
+ *
+ *   - 1 second ICE-gathering cap (not 2s) — matches Livestreamer; faster
+ *     to first SDP POST without sacrificing candidate coverage.
+ *
+ *   - **Retry loop with 5 second backoff** on a non-201, non-405 WHEP
+ *     POST response. Cloudflare occasionally returns a 5xx for ~5s after
+ *     the cloud-side stream is reported active; without retry the user
+ *     just sees a black box. With retry the player connects once the
+ *     ingest stabilizes.
+ *
+ *   - Stops on HTTP 405 (invalid WHEP URL — no point retrying).
+ *
+ *   - Stops if the peer connection is closed (caller called .close()).
  *
  * No external dependency needed; this is the whole protocol.
  */
@@ -27,19 +45,21 @@ export async function playWhepStream(
 ): Promise<WhepSession> {
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    // Required for Cloudflare WHEP: bundle audio + video on one transport.
+    bundlePolicy: "max-bundle",
   });
 
   // Egress only — we want video. We declare BOTH transceivers because
-  // Cloudflare publishes both audio + video tracks; an offer that omits the
+  // Cloudflare publishes audio + video tracks; an offer that omits the
   // audio m-line confuses negotiation and the video never reaches the
-  // <video> element (you get a black frame). We negotiate audio for the
-  // protocol's sake and just drop the incoming audio track on the floor.
+  // <video> element (black frame). We negotiate audio for the protocol's
+  // sake and just drop the incoming audio track on the floor.
   pc.addTransceiver("video", { direction: "recvonly" });
   pc.addTransceiver("audio", { direction: "recvonly" });
 
-  // Only attach the VIDEO track to the element — never the audio track.
-  // This is what makes the stream effectively "video-only" for our app.
   const remoteStream = new MediaStream();
+  let attached = false;
+
   pc.ontrack = (event) => {
     if (event.track.kind !== "video") {
       // Stop the audio track immediately so the browser doesn't waste any
@@ -47,54 +67,129 @@ export async function playWhepStream(
       event.track.stop();
       return;
     }
-    remoteStream.addTrack(event.track);
-    video.srcObject = remoteStream;
+    // Add the video track exactly once — Cloudflare sometimes fires
+    // ontrack twice for the same kind across renegotiations.
+    const hasVideo = remoteStream.getTracks().some((t) => t.kind === "video");
+    if (!hasVideo) {
+      remoteStream.addTrack(event.track);
+    }
   };
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  // Wait for ICE gathering to finish so the offer SDP is complete.
-  await waitForIceGathering(pc);
-
-  const response = await fetch(whepUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/sdp" },
-    body: pc.localDescription?.sdp ?? offer.sdp ?? "",
+  // Attach the stream to the <video> only once the connection is up.
+  // (Livestreamer's pattern.) Attaching too early gives the element a
+  // MediaStream that never produces frames if SDP fails.
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "connected" && !attached) {
+      attached = true;
+      video.srcObject = remoteStream;
+    }
   });
 
-  if (!response.ok) {
-    pc.close();
-    throw new Error(`WHEP request failed: HTTP ${response.status}`);
-  }
-
-  const answerSdp = await response.text();
-  await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+  // Kick off the first negotiation. The negotiation function runs its own
+  // retry loop, so we don't await it here — fire-and-forget. The session
+  // handle below can be closed at any time to abort.
+  void negotiateConnectionWithClientOffer(pc, whepUrl);
 
   return {
     close: () => {
       pc.ontrack = null;
-      pc.close();
-      video.srcObject = null;
+      try {
+        pc.close();
+      } catch {
+        /* already closed */
+      }
+      try {
+        video.srcObject = null;
+      } catch {
+        /* element may already be detached */
+      }
+      remoteStream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {
+          /* fine */
+        }
+      });
     },
   };
 }
 
-/** Resolve once ICE candidate gathering completes (or after a short cap). */
-function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
+/**
+ * Build a local SDP offer, POST it to the WHEP endpoint, apply the answer.
+ *
+ * Retries on transient errors (anything that isn't 201 Created or 405
+ * Method Not Allowed) with a 5 second backoff. Stops when:
+ *   - the WHEP server returns 201 (success — answer applied)
+ *   - the WHEP server returns 405 (URL invalid; no point retrying)
+ *   - the peer connection is closed by the caller
+ */
+async function negotiateConnectionWithClientOffer(
+  pc: RTCPeerConnection,
+  endpoint: string,
+): Promise<string | null> {
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
 
-  return new Promise((resolve) => {
-    const done = () => {
-      pc.removeEventListener("icegatheringstatechange", check);
-      clearTimeout(timer);
-      resolve();
-    };
-    const check = () => {
-      if (pc.iceGatheringState === "complete") done();
-    };
-    pc.addEventListener("icegatheringstatechange", check);
-    // Don't wait forever — most candidates arrive within ~1s.
-    const timer = setTimeout(done, 2000);
-  });
+  // Wait for ICE gathering to finish (or 1 second, whichever is first).
+  // Matches Livestreamer's WHEPClient timing. 2s was slower with no
+  // benefit — most candidates arrive in <300ms anyway.
+  const localDescription = await new Promise<RTCSessionDescription | null>(
+    (resolve) => {
+      const t = setTimeout(() => {
+        pc.removeEventListener("icegatheringstatechange", onChange);
+        resolve(pc.localDescription);
+      }, 1000);
+      const onChange = () => {
+        if (pc.iceGatheringState === "complete") {
+          clearTimeout(t);
+          pc.removeEventListener("icegatheringstatechange", onChange);
+          resolve(pc.localDescription);
+        }
+      };
+      pc.addEventListener("icegatheringstatechange", onChange);
+    },
+  );
+
+  if (!localDescription) {
+    console.error("[WHEPClient] Failed to gather ICE candidates for offer");
+    return null;
+  }
+
+  // Retry loop — keep posting until we get a 201, a 405, or the caller
+  // closes the connection. Backoff is fixed at 5 seconds (Livestreamer's
+  // value). Cloudflare's ingest typically stabilizes within one retry.
+  while (pc.connectionState !== "closed") {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        mode: "cors",
+        headers: { "content-type": "application/sdp" },
+        body: localDescription.sdp,
+      });
+
+      if (response.status === 201) {
+        const answerSdp = await response.text();
+        await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+        return response.headers.get("Location");
+      } else if (response.status === 405) {
+        console.error("[WHEPClient] Invalid WHEP URL (HTTP 405)");
+        return null;
+      } else {
+        const errBody = await response.text().catch(() => "");
+        console.warn(
+          `[WHEPClient] SDP negotiation error: HTTP ${response.status} ${errBody.slice(0, 200)}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[WHEPClient] WHEP POST failed: ${err instanceof Error ? err.message : String(err)} — retrying`,
+      );
+    }
+
+    // Backoff before next attempt. If the caller .close()d the connection
+    // during the sleep we bail next loop iteration.
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  return null;
 }

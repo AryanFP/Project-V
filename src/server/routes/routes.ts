@@ -18,6 +18,7 @@ import {
 } from "../api/livestream";
 import { connectAI, disconnectAI, aiFrame, aiStream, setAIMode } from "../api/ai";
 import { memoryCapture, memoryCaptureStream } from "../api/memory";
+import { listMemories } from "../api/memories";
 import { getDevUser } from "../api/dev";
 
 export const api = new Hono();
@@ -45,6 +46,8 @@ api.post("/ai/mode", setAIMode);
 // WHEP <video> on demand, webview POSTs them back here.
 api.get("/memory/capture-stream", memoryCaptureStream);
 api.post("/memory/capture", memoryCapture);
+// Listing of stored memories for the visual memory grid in the webview.
+api.get("/memories", listMemories);
 
 // Dev-only escape hatch — returns DEV_DEFAULT_USER_ID so localhost webviews
 // can skip the MentraOS auth flow. No-op in production.

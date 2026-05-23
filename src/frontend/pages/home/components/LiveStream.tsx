@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Video, VideoOff, Loader2 } from "lucide-react";
-import { Card, Button } from "../../../components/ui";
 import { playWhepStream, type WhepSession } from "../../../lib/whepClient";
 
 interface LiveStreamProps {
@@ -40,10 +38,9 @@ const STATUS_LABEL: Record<StreamStatus, string> = {
 };
 
 /**
- * LiveStream — shows the live WebRTC feed from the glasses camera.
- *
- * Subscribes to the server's livestream-status SSE for state (incl. the WHEP
- * `webrtcUrl`), and plays that URL into a <video> via the WHEP client.
+ * LiveStream — Paper-designed hero card showing the WebRTC feed from the
+ * glasses camera + Go/Stop controls. Functionally identical to the prior
+ * implementation; visual layout follows the Paper design.
  */
 export function LiveStream({
   userId,
@@ -113,14 +110,12 @@ export function LiveStream({
         });
     }
 
-    // Stream no longer active — tear the player down.
     if (state.status !== "active" && whepRef.current) {
       whepRef.current.close();
       whepRef.current = null;
     }
   }, [state.status, state.webrtcUrl, log]);
 
-  // Clean up the peer connection on unmount.
   useEffect(() => {
     return () => {
       whepRef.current?.close();
@@ -128,14 +123,11 @@ export function LiveStream({
     };
   }, []);
 
-  // Hand the <video> element to the parent (the AI panel samples frames
-  // from it) once mounted.
   useEffect(() => {
     onVideoRef?.(videoRef.current);
     return () => onVideoRef?.(null);
   }, [onVideoRef]);
 
-  // Report active/inactive transitions to the parent.
   useEffect(() => {
     onActiveChange?.(state.status === "active");
   }, [state.status, onActiveChange]);
@@ -179,73 +171,131 @@ export function LiveStream({
     state.status === "initializing" ||
     state.status === "preparing" ||
     state.status === "stopping";
-  // The stream is "up" (or coming up) whenever it isn't fully off — Stop
-  // must stay clickable through the whole initializing→active window so a
-  // slow/hung start can always be cancelled.
   const streamUp = isActive || isPending || starting;
 
   return (
-    <Card className="overflow-hidden p-0">
-      {/* Video surface */}
-      <div className="relative aspect-video bg-black">
+    <div className="flex flex-col w-full rounded-3xl overflow-hidden bg-white border border-solid border-[#E8EAED]">
+      {/* Video surface — Paper hero card */}
+      <div
+        className="relative w-full aspect-[16/10] flex items-center justify-center"
+        style={{
+          backgroundImage:
+            "linear-gradient(135deg, #1a1a1d 0%, #0e0e10 100%)",
+        }}
+      >
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          className="w-full h-full object-contain"
+          className={`absolute inset-0 w-full h-full object-cover ${
+            isActive ? "opacity-100" : "opacity-0"
+          } transition-opacity duration-300`}
         />
 
-        {/* Placeholder when nothing is playing */}
+        {/* Placeholder content when not playing — Paper's idle hero */}
         {!isActive && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/60">
-            {isPending ? (
-              <Loader2 className="w-8 h-8 animate-spin" />
-            ) : (
-              <VideoOff className="w-8 h-8" />
-            )}
-            <p className="text-sm">{STATUS_LABEL[state.status]}</p>
-            {state.status === "error" && state.message && (
-              <p className="text-xs text-red-400 max-w-xs text-center px-4">
-                {state.message}
-              </p>
-            )}
+          <div className="relative flex flex-col items-center gap-4">
+            <div className="flex items-center justify-center w-22 h-22 rounded-full bg-white/8 border border-solid border-white/18">
+              {isPending ? (
+                <div className="w-10 h-10 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+              ) : (
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M23 7l-7 5 7 5V7z"
+                    stroke="#FFFFFF"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                  <rect
+                    x="1"
+                    y="5"
+                    width="15"
+                    height="14"
+                    rx="2"
+                    stroke="#FFFFFF"
+                    strokeWidth="1.5"
+                  />
+                </svg>
+              )}
+            </div>
+            <p
+              className="font-['Roboto',system-ui,sans-serif] text-white/70 text-[15px]"
+              style={{ letterSpacing: "0.01em" }}
+            >
+              {state.status === "error" && state.message
+                ? state.message
+                : isPending
+                ? STATUS_LABEL[state.status]
+                : "Streaming the wearer's point of view"}
+            </p>
           </div>
         )}
 
         {/* Live badge */}
         {isActive && (
-          <div className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-red-600 px-2.5 py-1">
+          <div className="absolute top-3 left-3 flex items-center gap-1.5 rounded-full bg-[#D93025] px-2.5 py-1">
             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-white">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-white font-['Roboto',system-ui,sans-serif]">
               Live
             </span>
           </div>
         )}
       </div>
 
-      {/* Controls */}
-      <div className="p-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">
-          {STATUS_LABEL[state.status]}
-        </span>
-        {streamUp ? (
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={stopStream}
-            disabled={stopping}
-          >
-            <VideoOff className="w-3.5 h-3.5" />
-            {stopping ? "Stopping…" : "Stop"}
-          </Button>
-        ) : (
-          <Button size="sm" onClick={startStream} disabled={starting}>
-            <Video className="w-3.5 h-3.5" />
-            {starting ? "Starting…" : "Go Live"}
-          </Button>
-        )}
+      {/* Footer with title + controls */}
+      <div className="flex items-center justify-between w-full py-5 px-6">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center justify-center rounded-xl shrink-0 bg-[#FCE8E6] w-10 h-10">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M23 7l-7 5 7 5V7z" fill="#D93025" />
+              <rect x="1" y="5" width="15" height="14" rx="2" fill="#D93025" />
+            </svg>
+          </div>
+          <div className="flex flex-col">
+            <div className="font-['Roboto',system-ui,sans-serif] font-medium text-[#1F1F1F] text-base leading-tight">
+              Live camera
+            </div>
+            <div className="font-['Roboto',system-ui,sans-serif] text-[#5F6368] text-[13px]">
+              {isActive
+                ? "Broadcasting through Cloudflare · stills disabled while live"
+                : STATUS_LABEL[state.status]}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          {streamUp ? (
+            <button
+              type="button"
+              onClick={stopStream}
+              disabled={stopping}
+              className="flex items-center rounded-full py-2.5 px-5 gap-2 bg-[#D93025] hover:bg-[#B7261E] transition-colors disabled:opacity-60"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" fill="#FFFFFF" />
+              </svg>
+              <span className="font-['Roboto',system-ui,sans-serif] font-medium text-white text-sm">
+                {stopping ? "Stopping…" : "Stop stream"}
+              </span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={startStream}
+              disabled={starting}
+              className="flex items-center rounded-full py-2.5 px-5 gap-2 bg-[#0B57D0] hover:bg-[#0A4BB5] transition-colors disabled:opacity-60"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path d="M5 3v18l15-9L5 3z" fill="#FFFFFF" />
+              </svg>
+              <span className="font-['Roboto',system-ui,sans-serif] font-medium text-white text-sm">
+                {starting ? "Starting…" : "Go live"}
+              </span>
+            </button>
+          )}
+        </div>
       </div>
-    </Card>
+    </div>
   );
 }

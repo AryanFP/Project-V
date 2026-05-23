@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Badge } from "../../components/ui";
 import { LiveStream } from "./components/LiveStream";
 import { AIPanel } from "./components/AIPanel";
 import { MemoryCaptureBridge } from "./components/MemoryCaptureBridge";
+import { VisualMemoryGrid } from "./components/VisualMemoryGrid";
 import {
   TranscriptionFeed,
   type Transcription,
@@ -13,25 +13,71 @@ interface HomePageProps {
 }
 
 /**
- * HomePage — live camera stream + live captions.
+ * HomePage — Paper-designed Clairity dashboard.
  *
- * Pared down to just two things: the WebRTC livestream of the glasses
- * camera, and the real-time transcription captions beneath it.
+ * Layout, top to bottom:
+ *   1. Brand header with the rainbow-eye Clairity logo + user pill
+ *   2. Live camera hero card (LiveStream)
+ *   3. Gemini Assistant card (AIPanel) — mode tiles + conversation
+ *   4. Visual Memory gallery (VisualMemoryGrid) — today / yesterday / older
+ *   5. Live Transcription card (TranscriptionFeed)
+ *
+ * Headless: MemoryCaptureBridge fulfills "remember this" frame uploads.
  */
 export default function HomePage({ userId }: HomePageProps) {
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
   const idCounter = useRef(Date.now());
 
-  // Shared with AIPanel so it can sample frames from the live <video>.
+  // Shared with AIPanel + MemoryCaptureBridge so they sample frames from
+  // the same live <video> the LiveStream component owns.
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const [streamActive, setStreamActive] = useState(false);
+
+  // Bumped whenever a memory was just saved or recalled — VisualMemoryGrid
+  // refetches when this changes so the new card appears immediately
+  // instead of waiting on the 15s poll.
+  const [memoryRefreshKey, setMemoryRefreshKey] = useState(0);
 
   // Lightweight console-only logger for the LiveStream component.
   const addLog = useCallback((message: string) => {
     console.log(`[Clairity] ${message}`);
   }, []);
 
-  // Connect to the SSE transcription stream (captions).
+  // Listen for memory-source AI messages on the same SSE stream the
+  // AIPanel uses, so we can refresh the grid as soon as a remember
+  // completes. (Cheap to open a second EventSource — they're streamed
+  // events, not new TCP for each event.)
+  useEffect(() => {
+    if (!userId) return;
+    let es: EventSource | null = null;
+    let reconnect: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      es = new EventSource(`/api/ai-stream?userId=${encodeURIComponent(userId)}`);
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data?.source === "memory" && data?.role === "ai" && data?.done) {
+            setMemoryRefreshKey((k) => k + 1);
+          }
+        } catch {
+          /* ignore malformed frames */
+        }
+      };
+      es.onerror = () => {
+        es?.close();
+        reconnect = setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
+    return () => {
+      es?.close();
+      if (reconnect) clearTimeout(reconnect);
+    };
+  }, [userId]);
+
+  // Connect to the SSE transcription stream (live captions).
   useEffect(() => {
     if (!userId) return;
     let eventSource: EventSource | null = null;
@@ -52,12 +98,15 @@ export default function HomePage({ userId }: HomePageProps) {
               const entry: Transcription = {
                 id: idCounter.current++,
                 text: data.text,
-                time: new Date(data.timestamp).toLocaleTimeString(),
+                time: new Date(data.timestamp).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                  hour12: false,
+                }),
                 isFinal: data.isFinal,
               };
 
-              // Replace the leading partial with the updated partial/final;
-              // otherwise prepend a fresh entry.
               if (data.isFinal) {
                 if (prev.length > 0 && !prev[0].isFinal) {
                   const updated = [...prev];
@@ -94,44 +143,58 @@ export default function HomePage({ userId }: HomePageProps) {
     };
   }, [userId]);
 
+  const shortUser =
+    userId && userId.length > 24 ? `${userId.substring(0, 24)}…` : userId;
+
   return (
-    <div className="max-w-3xl mx-auto p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div>
-        <div className="flex items-center gap-3">
-          <img
-            src="/assets/icons/gemini-clairty.png"
-            alt="Clairity"
-            className="w-16 h-16 object-contain"
-          />
-          <div>
-            <h1 className="text-lg font-semibold">Clairity</h1>
-            <p className="text-xs text-muted-foreground">Live camera & captions</p>
+    <div
+      className="min-h-screen bg-white antialiased"
+      style={{ fontSynthesis: "none" }}
+    >
+      <div className="max-w-5xl mx-auto px-4 md:px-6 pt-8 pb-24 flex flex-col gap-6">
+        {/* Brand header */}
+        <div className="flex items-center justify-between w-full pt-2 px-1">
+          <div className="flex items-center gap-2">
+            <img
+              src="/assets/icons/gemini-clairty.png"
+              alt="Clairity"
+              className="w-18 h-18 object-contain"
+            />
+            <div className="flex flex-col gap-0.5">
+              <div
+                className="font-['Roboto',system-ui,sans-serif] font-medium text-[#505050] text-[20px] md:text-[34px] leading-tight"
+                style={{ letterSpacing: "-0.01em" }}
+              >
+                Gemini Clairity
+              </div>
+  
+            </div>
           </div>
+          {shortUser && (
+            <div></div>
+          )}
         </div>
-        <Badge variant="outline" className="font-mono text-xs mt-2">
-          {userId && userId.length > 20
-            ? `${userId.substring(0, 20)}...`
-            : userId}
-        </Badge>
+
+        {/* Live camera hero */}
+        <LiveStream
+          userId={userId}
+          onLog={addLog}
+          onVideoRef={setVideo}
+          onActiveChange={setStreamActive}
+        />
+
+        {/* AI assistant */}
+        <AIPanel userId={userId} video={video} streamActive={streamActive} />
+
+        {/* Headless: fulfills "remember this" frame captures from the live <video>. */}
+        <MemoryCaptureBridge userId={userId} video={video} />
+
+        {/* Visual memory gallery */}
+        <VisualMemoryGrid userId={userId} refreshKey={memoryRefreshKey} />
+
+        {/* Live transcription */}
+        <TranscriptionFeed transcriptions={transcriptions} />
       </div>
-
-      {/* Live camera stream */}
-      <LiveStream
-        userId={userId}
-        onLog={addLog}
-        onVideoRef={setVideo}
-        onActiveChange={setStreamActive}
-      />
-
-      {/* AI assistant — sees the camera feed, answers spoken questions */}
-      <AIPanel userId={userId} video={video} streamActive={streamActive} />
-
-      {/* Headless: fulfills "remember this" frame captures from the live <video>. */}
-      <MemoryCaptureBridge userId={userId} video={video} />
-
-      {/* Live captions */}
-      <TranscriptionFeed transcriptions={transcriptions} />
     </div>
   );
 }

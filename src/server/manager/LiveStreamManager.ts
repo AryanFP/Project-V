@@ -1,6 +1,37 @@
 import type { AppSession, ManagedStreamStatus } from "@mentra/sdk";
 import type { User } from "../session/User";
 
+/**
+ * Constants mirrored from the sibling Livestreamer app
+ * (Livestreamer/src/server/utils/constants.ts and stream.service.ts).
+ * Livestreamer's stream lifecycle is rock-solid in production; we follow
+ * its delays + timeouts exactly so a restart isn't a coin flip.
+ */
+/** How long to wait after stopManagedStream before assuming the stream is
+ *  actually gone. Matches Livestreamer's STREAM_STOP_DELAY (2000ms). */
+const STREAM_STOP_DELAY_MS = 2000;
+/** Hard cap on a single startManagedStream call. Mirrors Livestreamer. */
+const STREAM_START_TIMEOUT_MS = 45_000;
+
+/**
+ * Video config we send to startManagedStream. Mirrors Livestreamer's
+ * buildVideoConfig(1) (1 Mbps, 720x480 @ 20fps) which is their default
+ * preset for managed Cloudflare streams. The Mentra SDK accepts this shape
+ * directly under the `video` key.
+ *
+ * Why NOT { quality: "720p", enableWebRTC: true, audio: {...} } anymore:
+ *   - Livestreamer doesn't pass enableWebRTC at all (SDK enables WebRTC by
+ *     default for managed streams) and doesn't pass an audio config.
+ *   - The aggressive 8kHz/8kbps audio override we used to send was the most
+ *     likely culprit for the SDP-negotiation flakiness we saw.
+ */
+const VIDEO_CONFIG = {
+  width: 720,
+  height: 480,
+  bitrate: 1_000_000, // 1 Mbps
+  frameRate: 20,
+} as const;
+
 interface SSEWriter {
   write: (data: string) => void;
   userId: string;
@@ -97,34 +128,20 @@ export class LiveStreamManager {
     const startedWith = session;
 
     try {
-      // If the SDK still thinks a stream is open (e.g. left over from a
-      // failed attempt on a prior session), stop it first — startManagedStream
-      // throws "Already streaming" otherwise.
-      const existing = await session.camera.checkExistingStream().catch(() => null);
-      if (existing?.hasActiveStream) {
-        console.log(`📹 Found existing stream for ${this.user.userId}, stopping it first`);
-        await session.camera.stopManagedStream().catch(() => {});
-      }
+      // ─── STOP existing stream with verify ─────────────────────────────
+      // Mirror Livestreamer's stopExistingStreamIfNeeded: stop, wait 2s,
+      // verify it's actually gone, wait another 2s if not. Without these
+      // delays we routinely got "Managed stream failed" when restarting
+      // because the cloud was still mid-teardown when we issued start().
+      await this.stopExistingStreamIfNeeded(session);
 
-      // Managed stream with WebRTC enabled → sub-second WHEP playback.
-      // No restreamDestinations — passing those would silently drop
-      // WebRTC mode in favor of SRT/HLS.
-      // We don't use the stream's audio anywhere — the AI talks through the
-      // glasses speaker, the webview renders the WHEP video muted. The SDK
-      // has no explicit "video only" flag, so we starve the audio path:
-      // lowest sample rate + bitrate, no echo cancellation / noise
-      // suppression. The publisher still emits audio (we can't stop that
-      // from app code), but it's a minimum-effort stream we discard.
-      const result = await session.camera.startManagedStream({
-        quality: "720p",
-        enableWebRTC: true,
-        audio: {
-          bitrate: 8_000,        // 8 kbps — the floor
-          sampleRate: 8_000,     // 8 kHz — telephone-grade, minimal CPU
-          echoCancellation: false,
-          noiseSuppression: false,
-        },
-      });
+      // ─── START with 45s timeout + disconnect race ─────────────────────
+      // Livestreamer wraps startManagedStream in Promise.race against
+      // (a) a 45s timeout and (b) the session-disconnected event. Either
+      // racing rejection beats the SDK silently hanging on a flaky WS.
+      // SDK enables WebRTC by default for managed streams — we don't pass
+      // enableWebRTC, audio, or quality (see VIDEO_CONFIG comment above).
+      const result = await this.runStartWithTimeout(session, { video: VIDEO_CONFIG });
 
       // The session may have been replaced while we awaited.
       if (this.user.appSession !== startedWith) {
@@ -149,6 +166,112 @@ export class LiveStreamManager {
         this.setLocalState({ status: "error", message });
       }
       throw error;
+    }
+  }
+
+  /**
+   * Stop any existing managed stream and wait for it to fully tear down
+   * before returning. Mirrors Livestreamer's stopExistingStreamIfNeeded
+   * (Livestreamer/src/server/services/stream.service.ts:22-74).
+   *
+   * Steps:
+   *   1. checkExistingStream — does the cloud think one is active?
+   *   2. If yes, call stopManagedStream + wait STREAM_STOP_DELAY_MS (2s).
+   *   3. checkExistingStream again to verify the stop actually landed.
+   *   4. If STILL active, wait another 2s. (No third check — past this
+   *      point we'd rather attempt start() than block forever.)
+   *
+   * All errors swallowed: cleanup is best-effort. The subsequent start()
+   * call will surface any real problem.
+   */
+  private async stopExistingStreamIfNeeded(session: AppSession): Promise<void> {
+    try {
+      const existing = await session.camera.checkExistingStream().catch(() => null);
+      if (!existing?.hasActiveStream) return;
+
+      console.log(
+        `📹 Found existing managed stream for ${this.user.userId}, stopping it first…`,
+      );
+      await session.camera.stopManagedStream().catch((e) =>
+        console.warn(
+          `📹 stopManagedStream during pre-start failed for ${this.user.userId}:`,
+          e instanceof Error ? e.message : e,
+        ),
+      );
+      await sleep(STREAM_STOP_DELAY_MS);
+
+      // Verify it actually stopped (Livestreamer's "stopped?" recheck).
+      const recheck = await session.camera.checkExistingStream().catch(() => null);
+      if (recheck?.hasActiveStream) {
+        console.log(
+          `📹 Stream still active for ${this.user.userId} after stop — waiting another ${STREAM_STOP_DELAY_MS}ms…`,
+        );
+        await sleep(STREAM_STOP_DELAY_MS);
+      }
+    } catch (error) {
+      console.warn(
+        `📹 pre-start cleanup error for ${this.user.userId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  /**
+   * Race startManagedStream against three rejection paths:
+   *   1. Session disconnect — onDisconnected fires before the start
+   *      resolves. Rejects with a clear "glasses disconnected" error so
+   *      callers don't burn 45s on a dead connection.
+   *   2. 45s wall-clock timeout — the SDK sometimes hangs silently when
+   *      WiFi flaps. Rejecting lets a retry attempt start fresh.
+   *   3. startManagedStream itself resolves/rejects.
+   *
+   * Mirrors Livestreamer's startManagedStream wrapper
+   * (Livestreamer/src/server/services/stream.service.ts:143-193). The
+   * cleanup block runs in `finally` so the listener + timer are released
+   * even when the start resolves successfully.
+   */
+  private async runStartWithTimeout(
+    session: AppSession,
+    options: { video: typeof VIDEO_CONFIG },
+  ): Promise<{ webrtcUrl?: string; hlsUrl?: string }> {
+    const streamPromise = session.camera.startManagedStream(options as any);
+
+    const cleanup: {
+      disconnectUnsubscribe?: () => void;
+      timeoutId?: ReturnType<typeof setTimeout>;
+    } = {};
+
+    const disconnectPromise = new Promise<never>((_, reject) => {
+      const handler = () =>
+        reject(
+          new Error(
+            "Glasses disconnected during stream start. Reconnect to WiFi and try again.",
+          ),
+        );
+      // SDK returns an unsubscribe fn we must call in finally.
+      try {
+        cleanup.disconnectUnsubscribe = session.events.onDisconnected(handler);
+      } catch {
+        /* SDK may not expose this in older builds — best-effort. */
+      }
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      cleanup.timeoutId = setTimeout(
+        () =>
+          reject(new Error("Stream start timeout — request took too long")),
+        STREAM_START_TIMEOUT_MS,
+      );
+    });
+
+    try {
+      return (await Promise.race([streamPromise, disconnectPromise, timeoutPromise])) as {
+        webrtcUrl?: string;
+        hlsUrl?: string;
+      };
+    } finally {
+      cleanup.disconnectUnsubscribe?.();
+      if (cleanup.timeoutId) clearTimeout(cleanup.timeoutId);
     }
   }
 
@@ -337,4 +460,8 @@ export class LiveStreamManager {
       }
     })();
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
