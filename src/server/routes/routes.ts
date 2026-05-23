@@ -18,6 +18,7 @@ import {
 } from "../api/livestream";
 import { connectAI, disconnectAI, aiFrame, aiStream, setAIMode } from "../api/ai";
 import { memoryCapture, memoryCaptureStream } from "../api/memory";
+import { getDevUser } from "../api/dev";
 
 export const api = new Hono();
 
@@ -44,6 +45,10 @@ api.post("/ai/mode", setAIMode);
 // WHEP <video> on demand, webview POSTs them back here.
 api.get("/memory/capture-stream", memoryCaptureStream);
 api.post("/memory/capture", memoryCapture);
+
+// Dev-only escape hatch — returns DEV_DEFAULT_USER_ID so localhost webviews
+// can skip the MentraOS auth flow. No-op in production.
+api.get("/dev/user", getDevUser);
 
 // Audio
 api.post("/speak", speak);

@@ -26,56 +26,79 @@ export function useTheme() {
  * goes phone → ngrok → laptop. At a venue with slow Wi-Fi that's painful for
  * the JS bundle + every SSE reconnect. So in development, you can open
  * `http://localhost:3000/` directly in a regular browser tab and we skip
- * the auth handshake using BUN_PUBLIC_DEV_DEFAULT_USER_ID from .env.
+ * the auth handshake using DEV_DEFAULT_USER_ID from .env (read via
+ * /api/dev/user — see api/dev.ts).
+ *
  * A `?userId=…` query param overrides the env default if present.
  *
- * "Dev mode" is detected via NODE_ENV=development OR hostname=localhost.
- * The override is unreachable on a production host with NODE_ENV=production.
+ * The endpoint returns null when NODE_ENV=production, so the override is
+ * unreachable in prod.
+ *
+ * Returns: { userId: string | null, loading: boolean }
+ *   - loading: the env fetch is in-flight (very brief; one localhost call)
+ *   - userId:  the resolved override, or null if not applicable
  */
-function useDevUserOverride(): string | null {
-  if (typeof window === "undefined") return null;
+function useDevUserOverride(): { userId: string | null; loading: boolean } {
+  const [state, setState] = useState<{ userId: string | null; loading: boolean }>({
+    userId: null,
+    loading: true,
+  });
 
-  // Bun's HTML bundler exposes BUN_PUBLIC_* env vars on `process.env` at
-  // build time (not `import.meta.env`, which is undefined in this bundler
-  // version). Read defensively — both objects may be missing depending on
-  // the bundler / runtime combination.
-  const env =
-    (typeof process !== "undefined" && (process as any).env) || ({} as Record<string, string | undefined>);
-  const isDev =
-    env.NODE_ENV === "development" ||
-    // Fallback: localhost is always treated as dev for this escape hatch.
-    /^(localhost|127\.0\.0\.1|\[?::1\]?)$/i.test(window.location.hostname);
-  if (!isDev) return null;
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      setState({ userId: null, loading: false });
+      return;
+    }
 
-  const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(window.location.search);
 
-  // Block the override if the real auth tokens are present — those are still
-  // the authoritative source when the page was opened from the MentraOS app.
-  if (params.has("aos_signed_user_token") || params.has("aos_temp_token")) {
-    return null;
-  }
+    // Real auth tokens take priority — never override the production path.
+    if (params.has("aos_signed_user_token") || params.has("aos_temp_token")) {
+      setState({ userId: null, loading: false });
+      return;
+    }
 
-  // Priority: explicit ?userId=… > BUN_PUBLIC_DEV_DEFAULT_USER_ID from .env.
-  const queryUser = params.get("userId");
-  if (queryUser) return queryUser;
+    // Explicit ?userId=… wins over the env default. No fetch needed.
+    const queryUser = params.get("userId");
+    if (queryUser) {
+      setState({ userId: queryUser, loading: false });
+      return;
+    }
 
-  const envUser = env.BUN_PUBLIC_DEV_DEFAULT_USER_ID;
-  if (typeof envUser === "string" && envUser.length > 0) return envUser;
+    let cancelled = false;
+    fetch("/api/dev/user")
+      .then((res) => res.json())
+      .then((data: { userId: string | null }) => {
+        if (cancelled) return;
+        setState({
+          userId: typeof data?.userId === "string" && data.userId ? data.userId : null,
+          loading: false,
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setState({ userId: null, loading: false });
+      });
 
-  return null;
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return state;
 }
 
 export default function App() {
   const auth = useMentraAuth();
-  const devUser = useDevUserOverride();
+  const { userId: devUserId, loading: devUserLoading } = useDevUserOverride();
 
-  // If a dev override is present (localhost + ?userId=…), short-circuit the
-  // Mentra auth states. Treat the user as authenticated so HomePage mounts
-  // and the SSE / capture flows start.
-  const userId = devUser ?? auth.userId;
-  const isLoading = devUser ? false : auth.isLoading;
-  const error = devUser ? null : auth.error;
-  const isAuthenticated = devUser ? true : auth.isAuthenticated;
+  // If a dev override is present, short-circuit the Mentra auth states.
+  // Treat the user as authenticated so HomePage mounts and the SSE /
+  // capture flows start. The dev fetch is on localhost so loading is brief.
+  const userId = devUserId ?? auth.userId;
+  const isLoading = devUserId ? false : devUserLoading || auth.isLoading;
+  const error = devUserId ? null : auth.error;
+  const isAuthenticated = devUserId ? true : auth.isAuthenticated;
 
   // Theme state with localStorage persistence
   const [theme, setTheme] = useState<"light" | "dark">(() => {

@@ -9,7 +9,7 @@ import { recallMemories } from "./tools/recallMemories";
  * mishearings. Optional "Hey" — bare "Gemini" also works.
  */
 const HEY_VARIANTS = ["hey", "hi", "ay", "a"];
-const GEMINI_VARIANTS = ["gemini", "jiminy", "geminy", "gemeni", "jiminey", "gemoni"];
+const GEMINI_VARIANTS = ["gemini", "jiminy", "geminy", "gemeni", "jiminey", "gemoni", "jimena"];
 const WAKE_REGEX = new RegExp(
   `^["'\`.,\\s]*(?:(?:${HEY_VARIANTS.join("|")})[,\\s]+)?(?:${GEMINI_VARIANTS.join("|")})\\b`,
   "i",
@@ -187,7 +187,7 @@ export class MasterAgent {
    * existing realtime flow is untouched.
    */
   private async route(question: string): Promise<void> {
-    const { intent, payload } = routeIntent(question);
+    const { intent, payload } = await routeIntent(question);
 
     if (intent === "remember") {
       console.log(`🧠💾 Intent: remember (${this.user.userId}) — "${payload}"`);

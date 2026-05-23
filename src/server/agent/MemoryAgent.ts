@@ -452,14 +452,26 @@ export class MemoryAgent {
     const client = await this.ensureLibsql();
 
     if (this.vectorIndexOk) {
+      // `vector_top_k` returns a virtual table aliased here as `v` with an
+      // `id` column that is the matching row's rowid in `memories`. We must
+      // qualify every column in the SELECT to disambiguate v.id vs
+      // memories.id. Without the aliases this errors with "ambiguous column
+      // name: id" because both tables expose `id`.
       const result = await client.execute({
         sql: `
-          SELECT id, user_id, session_id, created_at, caption, entities,
-                 transcript, frame_count, thumb_b64
-          FROM vector_top_k('memories_vec', vector32(?), ?)
-          JOIN memories ON memories.rowid = id
-          WHERE memories.user_id = ?
-          ORDER BY created_at DESC
+          SELECT m.id        AS id,
+                 m.user_id   AS user_id,
+                 m.session_id AS session_id,
+                 m.created_at AS created_at,
+                 m.caption   AS caption,
+                 m.entities  AS entities,
+                 m.transcript AS transcript,
+                 m.frame_count AS frame_count,
+                 m.thumb_b64 AS thumb_b64
+          FROM vector_top_k('memories_vec', vector32(?), ?) AS v
+          JOIN memories AS m ON m.rowid = v.id
+          WHERE m.user_id = ?
+          ORDER BY m.created_at DESC
           LIMIT ?
         `,
         args: [
